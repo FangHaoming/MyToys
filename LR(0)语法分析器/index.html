@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LR(0)语法分析器</title>
+    <script src="https://cdn.staticfile.org/jquery/1.10.2/jquery.min.js"></script>
+    <style>
+        table {
+            border-collapse: collapse;
+            border-spacing: 0;
+            border: 1px solid #c0c0c0;
+        }
+
+        th,td {
+            border: 1px solid #d0d0d0;
+            color: #404060;
+            padding: 10px;
+        }
+
+        th {
+            background-color: #09c;
+            font: bold 16px "微软雅黑";
+            color: #fff;
+        }
+
+        td {
+            font: 14px "微软雅黑";
+        }
+        tbody tr {
+            background-color: #f0f0f0;
+        }
+    </style>
+</head>
+<body>
+    <div>
+        文法入口 G[<input type="text"  id="wenfa" size="1" value="S">]
+        ----------------
+        输入字符串：<input type="text"  id="string" value="abbcde#">
+        <input type="button"  id="judge" value="验证">
+        <br/>
+        <div id="InputsWrapper">
+            (0)<input type="text"  id="text_1" value="S->aAcBe"><br/>
+            (1)<input type="text"  id="text_2" value="A->b|Ab"><br/>
+            (2)<input type="text"  id="text_3" value="B->d"><br/>
+        </div>
+        <input type="button"  id="add" value="添加输入框">
+        <input type="button"  id="submit" value="提交">
+    </div>
+    <br/>
+    <div>
+        <div id="_G" style="display: inline-block"></div>
+        <div id="A_table"style="display: inline-block">
+            <table>
+                <thead >
+                <tr id="A_head">
+                </tr>
+                </thead>
+                <tbody id="A_body">
+                </tbody>
+            </table>
+        </div>
+        <div id="P_table" style="display: inline-block;vertical-align:top">
+            <table>
+                <thead>
+                <tr id="P_head">
+                </tr>
+                </thead>
+                <tbody id="P_body">
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <br/>
+    <div id="I_set" style="display: inline-block"></div>
+
+<script>
+    let inputG=[];  //用户输入文法
+    let en;       //文法入口
+    let G=[];     //拓展文法
+    let I=[];     //项目集
+    let Ii=[];    //项目
+    let aly=[];  //分析表（用来验证）
+    let Aly=[];  //分析表（用来生成）
+    let VN=[];  //非终结符集
+    let VT=[];  //终结符集
+    let Set=[]; //可归约串集
+    let next=[]; //每个状态产生式”·“后面第一个字符的集合
+    let State=[0]; //状态栈
+    let str;  //输入符号串
+    let Char="#"; //符号栈
+    let P=[]; //分析过程集 状态栈|符号栈|输入串|动作
+
+    //将用户输入文法转为拓展文法
+    function change(In){
+        let temp=[];
+        temp.push(en.toUpperCase()+"'"+"->"+en.toUpperCase());
+        for(let i=0;i<In.length;i++){
+            let tempS;
+            let count=[];
+            for(let j=0;j<In[i].length;j++){
+                if(In[i][j]==="|"){
+                    count.push(j);
+                }
+            }
+            if(count.length){
+                tempS=In[i].slice(0,In[i].indexOf("-")).toUpperCase()+"->"+In[i].slice(In[i].indexOf(">")+1,count[0]);
+                if(temp.indexOf(In[i])===-1)
+                    temp.push(tempS);
+                for(let k=0;k<count.length;k++){
+                    tempS=tempS.slice(0,tempS.indexOf(">")+1)+In[i].slice(count[k]+1,count[k+1]);
+                    if(temp.indexOf(In[i])===-1)
+                        temp.push(tempS);
+                }
+            }
+            else{
+                tempS=In[i].slice(0,In[i].indexOf("-")).toUpperCase()+"->"+In[i].slice(In[i].indexOf(">")+1);
+                if(temp.indexOf(tempS)===-1)
+                    temp.push(tempS);
+            }
+        }
+        return temp;
+    }
+    //往字符串中插入“."
+    function insertStr(source,start,newStr){
+        return source.slice(0,start)+newStr+source.slice(start);
+    }
+
+    //反转字符串
+    function invertStr(Str){
+        let temp="";
+        for(let i=0;i<Str.length;i++){
+            temp=temp+Str[Str.length-i-1];
+        }
+        Str=temp;
+        return Str;
+    }
+
+    //比较两个数组是否相等
+    function cmpStr(A,B){
+        let flag=false;
+        let temp=0;
+        if(A.length===B.length){
+            for(let i=0;i<A.length;i++){
+                if(A[i]!==B[i])
+                    temp++;
+            }
+            if(temp===0)
+                flag=true;
+        }
+        return flag;
+    }
+
+    //删除数组中某一元素
+    Array.prototype.remove=function(val){
+        let index=this.indexOf(val);
+        if(index>-1){
+            this.splice(index,1);
+        }
+    }
+
+    //从拓展文法里查产生式
+    let queryG=(S)=>{
+        let set=[];
+        for(let i=0;i<G.length;i++){
+            if(S===G[i].slice(0,G[i].indexOf("-"))){
+                set.push(insertStr(G[i],G[i].indexOf(">")+1,"·"));
+            }
+        }
+        return set;
+    }
+
+    //检查当前状态闭包
+    let check=()=>{
+        let j=0;
+        while(true){
+            if(Ii[j]!==undefined&&Ii[j].indexOf("·")!==Ii[j].length-1)
+                if(VN.indexOf(Ii[j][Ii[j].indexOf("·")+1])!==-1){ //如果产生式的第一个字符为非终结符
+                    let set=queryG(Ii[j][Ii[j].indexOf("·")+1]);
+                    for(let i=0;i<set.length;i++){
+                        if(Ii.indexOf(set[i])===-1)
+                            Ii.push(set[i]);
+                    }
+                }
+            j++;
+            if(j===Ii.length||Ii.length===0){
+                break;
+            }
+        }
+        if(Ii.length!==0){
+            I.push(Ii);
+            next.push(Next(Ii));
+        }
+        Ii=[];
+    }
+
+    //"·"标记前进
+    function go(str){
+        return insertStr(str.slice(0,str.indexOf("·"))+str.slice(str.indexOf("·")+1),str.indexOf("·")+1,"·");
+    }
+
+    //生成每个状态产生式”·“后面第一个字符的集合
+    function Next(Ii){
+        let next=[];
+        for(let i=0;i<Ii.length;i++){
+            if(Ii[i].indexOf("·")!==Ii[i].length-1){
+                if(next.indexOf(Ii[i][Ii[i].indexOf("·")+1])===-1){  //如果next里面不存在”·“后字符 则将字符加入next
+                    next.push(Ii[i][Ii[i].indexOf("·")+1]);
+                }
+            }
+        }
+        return next;
+    }
+
+    //创建分析表
+    let createAnalysisTable=()=>{
+        I=[];
+        aly=[];
+        VN=[];
+        VT=[];
+        next=[];
+        //非终结符集 & 可归约串集
+        for(let i=0;i<G.length;i++){
+            if(VN.indexOf(G[i].slice(0,G[i].indexOf("-")))===-1){
+                if(G[i].slice(0,G[i].indexOf("-"))===en+"'")
+                    continue;
+                else{
+                    VN.push(G[i].slice(0,G[i].indexOf("-")));
+                }
+            }
+            if(Set.indexOf(G[i].slice(G[i].indexOf(">")+1))===-1){
+                Set.push(G[i].slice(G[i].indexOf(">")+1));
+            }
+        }
+
+        //终结符集
+        for(let i=0;i<G.length;i++) {
+            for(let j=G[i].indexOf(">")+1;j<G[i].length;j++){
+                if(VT.indexOf(G[i][j])===-1 && VN.indexOf(G[i][j])===-1){
+                    VT.push(G[i][j]);
+                }
+            }
+        }
+        VT.push("#");
+
+        //第一个状态I0
+        if(I.length===0){
+            Ii.push(insertStr(G[0],G[0].indexOf(">")+1,"·"));
+            check();
+        }
+
+        let k=-1;//第一个next
+        let max=1;
+        let act; //跳转s 归约r 接受acc
+        let char; //遇到字符
+        let next1; //下一状态
+        while(true){
+            k++;
+            if(next[k].length===0){
+                if(I[k][0]===G[0]+"·"){ //如果当前状态的第一条产生式是S'->S·
+                    act="acc";
+                    next1="";
+                    char="#";
+                }
+                else{
+                    act="r";
+                    next1=G.indexOf(I[k][0].slice(0,I[k][0].length-1));
+                    char="_";
+                }
+                aly.push([k,char,act,next1]); //分析表 （ 1 a s 3） 状态、遇到字符、动作、状态
+                if(k===I.length-1)
+                    break;
+                continue;
+            }
+
+            for(let i=0;i<next[k].length;i++){ // "S" "a"  分支
+                for(let j=0;j<I[k].length;j++){  //  对每个分支 遍历上一个状态I0 生成下一个状态I1、I2....
+                    if(I[k][j][I[k][j].indexOf("·")+1]===next[k][i]){ //如果上个状态的每个产生式”·“后面字符和上个状态next[i] 相等  I[k]：S'->·S  next[k][i]: S
+                        Ii.push(go(I[k][j]));    //则将上个状态的产生式go后push当前状态  Ii:S'->S·
+                        if(VN.indexOf(I[k][j][I[k][j].indexOf("·")+1])!==-1){  //如果遇到非终结符，则没有小s
+                            act="";
+                        }
+                        else{
+                            act="s";
+                        }
+                        next1=I.length;
+                        char=I[k][j][I[k][j].indexOf("·")+1];
+                        aly.push([k,char,act,next1]); //分析表 （ 1 a s 3） 状态、遇到字符、动作、状态
+                    }
+                }
+                check();
+                if(I.length>=2) {
+                    for (let m = 0; m < I.length-1; m++) {
+                        if (cmpStr(I[m], I[I.length - 1])) {
+                            if (m === k) {
+                                for (let n = 0; n < aly.length; n++) {
+                                    if (aly[n][0] === k && aly[n][3] === I.length - 1)
+                                        aly[n][3] = aly[n][0];
+                                }
+                            }
+                            else {
+                                for(let p=0;p<aly.length;p++){
+                                    if(aly[p][0]===k&&aly[p][1]===next[k][i])
+                                        aly[p][3]=m;
+                                }
+                                /*
+                                for (let f = aly.length - 1; f > 0; f--)  //后面的
+                                    for (let g = 0; g < i; g++) { //前面的
+                                        if (aly[f][1] === "_" && cmpStr(aly[g].slice(1), aly[f].slice(1))) {
+                                            for (let h = g + 1; h < f; h++) {
+                                                if (aly[h][3] === aly[f][0])
+                                                    aly[h][3] = aly[g][0];
+                                            }
+                                            aly[f][0] = aly[g][0];
+                                        }
+                                    }
+                                    */
+                            }
+                            next.remove(next[I.length-1]); //除去重复状态的next集
+                            I.remove(I[I.length - 1]); // 除去重复状态
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    //查分析表,如果为空 或 分析结束 返回false
+    let queryA=(state,char)=>{
+        /*
+        let State=[0]; //状态栈
+        let str;  //输入符号串
+        let Char="#"; //符号栈
+        let P=[]; //分析过程 状态栈|符号栈|输入串|动作
+         */
+        let has=false;
+        let count=0;
+        for(let i=0;i<aly.length;i++){
+            if(state===aly[i][0] &&(char===aly[i][1]||(char!==aly[i][1]&&aly[i][1]==="_"))){ //状态栈 输入符号
+                has=true;
+                if(state===0)
+                    P.push(["0","#",invertStr(str),""]);
+                if(aly[i][2]===""||aly[i][2]==="s"){ //移进
+                    State.push(aly[i][3]); //状态入栈
+                    Char=Char+aly[i][1];   //符号入栈
+                    str=str.slice(0,str.length-1); //输入字符串出栈
+                    P.push([State.join(""),Char,invertStr(str),aly[i][2]+aly[i][3]]);
+                }
+                if(aly[i][2]==="r"){ //归约
+                    let len=0;
+                    for(let j=1;j<Char.length;j++){ //遍历符号串，找可归约串
+                        if(Set.indexOf(Char.slice(j))!==-1){
+                            len=Set[Set.indexOf(Char.slice(j))].length; //可归约串的长度
+                            break;
+                        }
+                    }
+                    State.length=State.length-len; //状态出栈
+                    Char=Char.slice(0,Char.length-len); //符号出栈
+                    Char=Char+G[aly[i][3]].slice(0,G[aly[i][3]].indexOf("-"));  //符号入栈
+                    for(let k=0;k<aly.length;k++){  //状态入栈
+                        if(State[State.length-1]===aly[k][0] && aly[k][1]===Char[Char.length-1]){
+                            State.push(aly[k][3]);
+                            break;
+                        }
+                    }
+                    P.push([State.join(""),Char,invertStr(str),aly[i][2]+aly[i][3]]);
+                }
+
+                if(aly[i][2]==="acc"){ //接受
+                    has=false;
+                }
+                count++;
+            }
+        }
+        if(count===0&&P.length===0)
+            P.push(["0","#",invertStr(str),"出错"]);
+        return has;
+    }
+
+    //验证输入字符串是否为该文法的一个句子
+    let judgeString=()=>{
+        /*
+        let State=[0]; //状态栈
+        let str;  //输入符号串
+        let Char="#"; //符号栈
+         */
+        State=[0];
+        Char="#";
+        P=[];
+        if(str[str.length-1]!=="#")
+            str=str+"#";
+        str=invertStr(str);
+        while(true){
+            if(!queryA(State[State.length-1],str[str.length-1])){ //如果分析出错了 或者 分析结束了
+                break;
+            }
+        }
+
+        for(let i=0;i<P.length-1;i++){
+            P[i][3]=P[i+1][3];
+        }
+        if(P[P.length-1][0]==="01"&&P[P.length-1][1]==="#"+en&&P[P.length-1][2]==="#")
+            P[P.length-1][3]="acc";
+        else
+            P[P.length-1][3]="出错";
+    }
+
+    $(document).ready(function () {
+        let InputCount=2;
+        $("#add").click(function (e)
+        {
+            InputCount++;
+            $("#InputsWrapper").append(''+'('+InputCount+')'+'<input type="text"  id="text_' + InputCount + '" /><br/>');
+        });
+        $("#submit").click(function(e)
+        {
+            inputG=[];
+            Aly=[];
+            en=$("#wenfa").val().toUpperCase();
+            $("#InputsWrapper input[type='text']").each(function(){
+                if($(this).val()!==""){
+                    inputG.push($(this).val());
+                }
+            })
+            G=change(inputG);
+            createAnalysisTable();
+            //创建表头
+            $("#A_head").empty();
+            let head=[];
+            for(let i=0;i<VT.length;i++){
+                head.push(VT[i]);
+            }
+            for(let i=0;i<VN.length;i++){
+                head.push(VN[i]);
+            }
+            $("#A_head").append("<th>"+ "状态" +"</th>");
+            for(let i=0;i<head.length;i++)
+                $("#A_head").append("<th>"+ head[i]+"</th>");
+            //往表中添加数据
+            $("#A_body").empty();
+            for(let i=0;i<I.length;i++){
+                Aly[i]=[];
+                Aly[i][0]=i;
+                for(let j=1;j<head.length+1;j++)
+                    Aly[i][j]="";
+            }
+            for( let i= 0; i < aly.length; i++ ) {
+                for(let j=0;j<head.length;j++){
+                    if(aly[i][1]===head[j]){
+                        Aly[aly[i][0]][j+1]=aly[i][2]+aly[i][3];
+                    }
+                    else if(aly[i][1]==="_"){
+                        for(let k=0;k<VT.length;k++)
+                            Aly[aly[i][0]][k+1]=aly[i][2]+aly[i][3];
+                    }
+                }
+
+            }
+            for( let i= 0; i < Aly.length; i++ ) {
+                //动态创建一个tr行标签,并且转换成jQuery对象
+                let $trTemp = $("<tr></tr>");
+                //往行里面追加 td单元格
+                for(let n=0;n<head.length+1;n++)
+                    $trTemp.append("<td>"+ Aly[i][n] +"</td>");
+                $("#A_body").append($trTemp);
+            }
+            //创建拓展文法
+            $("#_G").empty();
+            let tmp="";
+            for(let i=0;i<G.length;i++){
+                tmp=tmp+"</br>"+G[i];
+            }
+            $("#_G").append("<div>"+"拓展文法为："+tmp+"</div>")
+            $("#_G" ).css("display","inline-block")
+                .css("border","solid 1px")
+                .css("margin","5px")
+                .css("vertical-align","top")
+                .css("padding","5px");
+            //创建项目集
+            $("#I_set").empty();
+            for(let i=0;i<I.length;i++){
+                let temp="";
+                for(j=0;j<I[i].length;j++)
+                    temp=temp+"</br>"+I[i][j];
+                $("#I_set").append("<div>"+"I"+i+"："+temp+"</div>")
+                $("#I_set div" ).css("display","inline-block")
+                    .css("border","solid 1px")
+                    .css("margin","5px")
+                    .css("vertical-align","top")
+                    .css("padding","5px");
+            }
+        })
+        $("#judge").click(function(e){
+            str=$('input[id="string"]').val();
+            judgeString();
+            $("#P_body").empty();
+            $("#P_head")
+                .empty()
+                .append("<th>"+ "步骤" +"</th>")
+                .append("<th>"+ "状态栈" +"</th>")
+                .append("<th>"+ "符号栈" +"</th>")
+                .append("<th>"+ "输入串" +"</th>")
+                .append("<th>"+ "动作" +"</th>");
+            for( let i= 0; i < P.length; i++ ) {
+                //动态创建一个tr行标签,并且转换成jQuery对象
+                let $trTemp = $("<tr></tr>");
+                //往行里面追加 td单元格
+                $trTemp
+                    .append("<td>"+ "("+(i+1)+")" +"</td>")
+                    .append("<td>"+ P[i][0] +"</td>")
+                    .append("<td>"+ P[i][1] +"</td>")
+                    .append("<td>"+ P[i][2] +"</td>")
+                    .append("<td>"+ P[i][3] +"</td>");
+                $("#P_body").append($trTemp);
+            }
+        })
+    });
+
+</script>
+</body>
+</html>
